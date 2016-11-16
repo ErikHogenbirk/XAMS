@@ -56,7 +56,7 @@ class MongoDBInputTriggered(plugin.InputPlugin, MongoBase):
         trigger_time = self.trigger_times[event_number]
         self.log.debug("Fetching trigger time %d", trigger_time)
 
-        return EventProxy(event_number=event_number, data=dict(trigger_time=trigger_time))
+        return EventProxy(event_number=event_number, data=dict(trigger_time=trigger_time), block_id=-1)
 
 
 
