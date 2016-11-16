@@ -105,6 +105,7 @@ class MongoDBInputTriggeredEncoder(plugin.TransformPlugin, MongoBase):
                        earliest_time,
                        latest_time)
         return Event(n_channels=self.config['n_channels'],
+                     block_id=event_proxy.block_id,
                      start_time=earliest_time,
                      sample_duration=self.config['sample_duration'],
                      stop_time=latest_time,
