@@ -1,28 +1,114 @@
-from pax import plugin, units
+import time
+
 import numpy as np
 import pymongo
-
 import snappy
-from bson.binary import Binary
+
 from pax.datastructure import Event, Pulse, EventProxy
+from pax import plugin, units
 
 
-class MongoBase():
+class MongoXAMSBase:
     
     def startup(self):
+        self.mongo_time_unit = int(self.config.get('mongo_time_unit', 10 * units.ns))
+        self.only_from_channels = self.config.get('only_from_channels', None)
+        self.dt = self.config['sample_duration']
+
         self.log.debug("Connecting to %s" % self.config['address'])
         try:
             self.client = pymongo.MongoClient(self.config['address'])
-            self.database = self.client[self.config['database']]
+            database_name = self.config.get('input_name', self.config.get('database', 'xamsdata'))
+            self.database = self.client[database_name]
             self.collection = self.database[self.config['collection']]
         except pymongo.errors.ConnectionFailure as e:
             self.log.fatal("Cannot connect to database")
             self.log.exception(e)
             raise
 
+        self.pulses = []
+        self.current_time = -1
+        self.events_built = 0
+
+    def events_from_mongo_docs(self, pulse_docs, flush=False):
+        """Yields pax events from Mongo pulse documents.
+        Assumes all pulses belonging to a single event start and end at the same time.
+        :param pulse_docs: iterable yielding pulse docs in ascending time order
+        :param flush: set to true to cause the last event to flush out. Leave to false if you're not sure you have
+        all the pulses for the last event in pulse_docs.
+        """
+        for pulse_doc in pulse_docs:
+
+            if self.only_from_channels is not None:
+                if pulse_doc['channel'] not in self.only_from_channels:
+                    continue
+
+            if pulse_doc['time'] != self.current_time:
+                if len(self.pulses):
+                    yield self.make_event()
+
+            # Fetch raw data from document
+            data = snappy.decompress(pulse_doc['data'])
+
+            self.pulses.append(Pulse(left=0,
+                                     raw_data=np.fromstring(data, dtype="<i2"),
+                                     channel=pulse_doc['channel']))
+
+        if flush and len(self.pulses):
+            yield self.make_event()
+
+    def make_event(self):
+        """Send the event from the currently processed pulses, then prepare for the next event
+        """
+        event = Event(n_channels=self.config['n_channels'],
+                      start_time=self.current_time,
+                      sample_duration=self.dt,
+                      stop_time=self.current_time + self.dt * len(self.pulses[0]),
+                      pulses=self.pulses,
+                      event_number=self.events_built)
+        self.events_built += 1
+        self.pulses = []
+        return event
 
 
-class MongoDBInputTriggered(plugin.InputPlugin, MongoBase):
+class MongoDBInputOnline(plugin.InputPlugin, MongoXAMSBase):
+
+    def get_events(self):
+        last_time_searched = 0
+        nothing_last_time = False
+        last_query_time = time.time()
+        minimum_query_time = self.config.get('minimum_query_time_seconds', 3)
+
+        while True:
+
+            # Prevent lots of mini-queries quickly after each other
+            now = time.time()
+            if now - last_query_time < minimum_query_time:
+                time_to_sleep = minimum_query_time - now - last_query_time
+                self.log.info("Sleeping %0.1f seconds bit to let data taking catch up." % time_to_sleep)
+                time.sleep(time_to_sleep)
+            last_query_time = time.time()
+
+            cursor = self.collection.find({"time", {"$gt": last_time_searched}}).sort("time", pymongo.ASCENDING)
+            n_pulses = cursor.count()
+
+            if n_pulses == 0:
+                if nothing_last_time:
+                    self.log.info("nothing last time either, assume the run ended")
+                    yield from self.events_from_mongo_docs([], flush=True)
+                    break
+
+                # We get nothing, the run has probably ended. Just to be sure we'll go for one more round.
+                self.log.info("Processed all pulses left in db.")
+                nothing_last_time = True
+                continue
+
+            nothing_last_time = False
+
+            yield from self.events_from_mongo_docs(cursor)
+
+
+class MongoDBInputTriggered(plugin.InputPlugin, MongoXAMSBase):
 
     """Read triggered data produced by kodiaq with MongoDB output
 
@@ -31,10 +117,8 @@ class MongoDBInputTriggered(plugin.InputPlugin, MongoBase):
     do_output_check = False
 
     def startup(self):
-        MongoBase.startup(self)
+        MongoXAMSBase.startup(self)
 
-        # All of the channel pulses will have the same
-        # time if they came from the same trigger.
         self.trigger_times = self.collection.distinct('time')
         self.number_of_events = len(self.trigger_times)
 
@@ -59,56 +143,17 @@ class MongoDBInputTriggered(plugin.InputPlugin, MongoBase):
         return EventProxy(event_number=event_number, data=dict(trigger_time=trigger_time), block_id=-1)
 
 
-
-class MongoDBInputTriggeredEncoder(plugin.TransformPlugin, MongoBase):
+class MongoDBInputTriggeredEncoder(plugin.TransformPlugin, MongoXAMSBase):
     do_input_check = False
 
-    def startup(self):
-        MongoBase.startup(self)
-
-        self.mongo_time_unit = int(self.config.get('mongo_time_unit', 10 * units.ns))
-        self.only_from_channels = self.config.get('only_from_channels', None)
-
     def transform_event(self, event_proxy):
+
         event_number = event_proxy.event_number
-        data = event_proxy.data
-        trigger_time = data['trigger_time']
+        trigger_time = event_proxy.data['trigger_time']
 
         cursor = self.collection.find({'time': trigger_time})
-        self.log.debug("Found %d pulses", cursor.count())
 
-        latest_time = []
-        pulse_objects = []
+        event = list(self.events_from_mongo_docs(pulse_docs=cursor, flush=True))[0]
+        event.event_number = event_number
 
-        for j, pulse_doc in enumerate(cursor):
-            self.log.debug("Fetching document %s" % repr(pulse_doc['_id']))
-                           
-            if self.only_from_channels is not None:
-                if pulse_doc['channel'] not in self.config['only_from_channels']:
-                    continue
-
-            # Fetch raw data from document
-
-            data = snappy.decompress(pulse_doc['data'])
-            # Samples are stored as 16 bit numbers (i.e. 2 bytes).  Also
-            # note that // is an integer divide.
-            latest_time.append(trigger_time + len(data) // 2)
-
-            pulse_objects.append(Pulse(left=0,
-                                       raw_data=np.fromstring(data, dtype="<i2"),
-                                       channel=pulse_doc['channel']))
-
-        earliest_time = trigger_time * self.mongo_time_unit
-        latest_time = max(latest_time) * self.mongo_time_unit
-
-        self.log.debug("Building event in range [%d,%d]",
-                       earliest_time,
-                       latest_time)
-        return Event(n_channels=self.config['n_channels'],
-                     block_id=event_proxy.block_id,
-                     start_time=earliest_time,
-                     sample_duration=self.config['sample_duration'],
-                     stop_time=latest_time,
-                     pulses=pulse_objects,
-                     event_number=event_number)
-
+        return event
