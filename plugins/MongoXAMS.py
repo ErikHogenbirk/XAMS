@@ -86,12 +86,12 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
         insufficient_last_time = False
 
         # Keep behind last pulse in the DB to avoid problems if insertion is slightly asynchonous
-        acquisition_delay = self.config.get('acquisition_delay_sec', 3) * units.s
+        acquisition_delay = self.config.get('acquisition_delay_sec', 3) * units.s / self.mongo_time_unit
 
         # nothing_last_time = False
         # last_query_time = None
         # also_less_last_time = False
-        minimum_query_time = self.config.get('minimum_query_time_seconds', 3)
+        minimum_query_time = self.config.get('minimum_query_time_seconds', 3) * units.s / self.mongo_time_unit
 
         done = False
         while done is False:
@@ -101,23 +101,23 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
                 raise ValueError("No pulses in database?")
             
             last_pulse_time = last_pulse_list[0]['time']
-            next_time_to_search = last_pulse_time - 100000000
+            next_time_to_search = last_pulse_time - acquisition_delay
     
             data_range_to_query = next_time_to_search - last_time_searched
 
-            if data_range_to_query <= 0:                
-
-                time_to_sleep = 1
-                if time_to_sleep > 0:
-                    if insufficient_last_time:
-                        # Still not enough data -- we must be nearing the end of run. Fetch all data!
-                        next_time_to_search = last_pulse_time + 1000
-                        done = True
-                    else:
-                        self.log.info("Insufficient data remaining, sleeping %0.1f sec, then retrying" % time_to_sleep)
-                        time.sleep(time_to_sleep)
-                        insufficient_last_time = True
-                        continue
+            time_to_sleep = minimum_query_time - data_range_to_query
+            time_to_sleep *= self.mongo_time_unit / units.s
+            if time_to_sleep > 0:
+                time_to_sleep += 5                
+                if insufficient_last_time:
+                    # Still not enough data -- we must be nearing the end of run. Fetch all data!
+                    next_time_to_search = last_pulse_time + 1000
+                    done = True
+                else:
+                    self.log.info("Insufficient data remaining, sleeping %0.1f sec, then retrying" % (time_to_sleep))
+                    time.sleep(time_to_sleep)
+                    insufficient_last_time = True
+                    continue
 
             insufficient_last_time = False
 
@@ -129,7 +129,7 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
 
             last_time_searched = next_time_to_search
             
-            yield from self.events_from_mongo_docs(cursor)        
+            yield from self.events_from_mongo_docs(cursor, flush=done)        
 
 """
 class MongoDBInputTriggered(plugin.InputPlugin, MongoXAMSBase):
