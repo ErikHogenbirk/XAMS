@@ -26,9 +26,12 @@ class MongoXAMSBase:
             self.log.exception(e)
             raise
 
+        self.collection.create_index([('time', pymongo.ASCENDING)], background=True)
+
         self.pulses = []
         self.current_time = -1
         self.events_built = 0
+        super().startup()
 
     def events_from_mongo_docs(self, pulse_docs, flush=False):
         """Yields pax events from Mongo pulse documents.
@@ -46,6 +49,7 @@ class MongoXAMSBase:
             if pulse_doc['time'] != self.current_time:
                 if len(self.pulses):
                     yield self.make_event()
+                self.current_time = pulse_doc['time'] * self.dt
 
             # Fetch raw data from document
             data = snappy.decompress(pulse_doc['data'])
@@ -63,7 +67,7 @@ class MongoXAMSBase:
         event = Event(n_channels=self.config['n_channels'],
                       start_time=self.current_time,
                       sample_duration=self.dt,
-                      stop_time=self.current_time + self.dt * len(self.pulses[0]),
+                      stop_time=self.current_time + self.dt * len(self.pulses[0].raw_data),
                       pulses=self.pulses,
                       event_number=self.events_built)
         self.events_built += 1
@@ -71,49 +75,68 @@ class MongoXAMSBase:
         return event
 
 
-class MongoDBInputOnline(plugin.InputPlugin, MongoXAMSBase):
+class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
+
+    def startup(self):
+        super().startup()
 
     def get_events(self):
+        last_pulse_time = -1
         last_time_searched = 0
-        nothing_last_time = False
-        last_query_time = time.time()
+        insufficient_last_time = False
+
+        # Keep behind last pulse in the DB to avoid problems if insertion is slightly asynchonous
+        acquisition_delay = self.config.get('acquisition_delay_sec', 3) * units.s
+
+        # nothing_last_time = False
+        # last_query_time = None
+        # also_less_last_time = False
         minimum_query_time = self.config.get('minimum_query_time_seconds', 3)
 
-        while True:
+        done = False
+        while done is False:
 
-            # Prevent lots of mini-queries quickly after each other
-            now = time.time()
-            if now - last_query_time < minimum_query_time:
-                time_to_sleep = minimum_query_time - now - last_query_time
-                self.log.info("Sleeping %0.1f seconds bit to let data taking catch up." % time_to_sleep)
-                time.sleep(time_to_sleep)
-            last_query_time = time.time()
+            last_pulse_list = list(self.collection.find().sort('_id', direction=pymongo.DESCENDING).limit(1))
+            if not len(last_pulse_list):
+                raise ValueError("No pulses in database?")
+            
+            last_pulse_time = last_pulse_list[0]['time']
+            next_time_to_search = last_pulse_time - 100000000
+    
+            data_range_to_query = next_time_to_search - last_time_searched
 
-            cursor = self.collection.find({"time", {"$gt": last_time_searched}}).sort("time", pymongo.ASCENDING)
-            n_pulses = cursor.count()
+            if data_range_to_query <= 0:                
 
-            if n_pulses == 0:
-                if nothing_last_time:
-                    self.log.info("nothing last time either, assume the run ended")
-                    yield from self.events_from_mongo_docs([], flush=True)
-                    break
+                time_to_sleep = 1
+                if time_to_sleep > 0:
+                    if insufficient_last_time:
+                        # Still not enough data -- we must be nearing the end of run. Fetch all data!
+                        next_time_to_search = last_pulse_time + 1000
+                        done = True
+                    else:
+                        self.log.info("Insufficient data remaining, sleeping %0.1f sec, then retrying" % time_to_sleep)
+                        time.sleep(time_to_sleep)
+                        insufficient_last_time = True
+                        continue
 
-                # We get nothing, the run has probably ended. Just to be sure we'll go for one more round.
-                self.log.info("Processed all pulses left in db.")
-                nothing_last_time = True
-                continue
+            insufficient_last_time = False
 
-            nothing_last_time = False
+            self.log.info("Searching after %0.3f mongos until %0.4f mongos" % (last_time_searched, next_time_to_search))
+            cursor = self.collection.find({"time": {"$gte": last_time_searched, 
+                                                    "$lt": next_time_to_search}})
+            cursor = cursor.sort("time", pymongo.ASCENDING)
+            self.log.info("Found %d pulses" % cursor.count())
 
-            yield from self.events_from_mongo_docs(cursor)
+            last_time_searched = next_time_to_search
+            
+            yield from self.events_from_mongo_docs(cursor)        
 
-
+"""
 class MongoDBInputTriggered(plugin.InputPlugin, MongoXAMSBase):
 
-    """Read triggered data produced by kodiaq with MongoDB output
+    # Read triggered data produced by kodiaq with MongoDB output
+    # This must be run after the data aquisition is finished.
 
-    This must be run after the data aquisition is finished.
-    """
     do_output_check = False
 
     def startup(self):
@@ -157,3 +180,4 @@ class MongoDBInputTriggeredEncoder(plugin.TransformPlugin, MongoXAMSBase):
         event.event_number = event_number
 
         return event
+"""
