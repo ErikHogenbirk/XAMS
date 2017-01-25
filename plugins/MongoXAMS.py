@@ -2,14 +2,15 @@ import time
 
 import numpy as np
 import pymongo
+from bson.objectid import ObjectId
 import snappy
 
-from pax.datastructure import Event, Pulse, EventProxy
+from pax.datastructure import Event, Pulse
 from pax import plugin, units
 
 
 class MongoXAMSBase:
-    
+
     def startup(self):
         self.mongo_time_unit = int(self.config.get('mongo_time_unit', 10 * units.ns))
         self.only_from_channels = self.config.get('only_from_channels', None)
@@ -18,13 +19,27 @@ class MongoXAMSBase:
         self.log.debug("Connecting to %s" % self.config['address'])
         try:
             self.client = pymongo.MongoClient(self.config['address'])
-            database_name = self.config.get('input_name', self.config.get('database', 'xamsdata'))
-            self.database = self.client[database_name]
-            self.collection = self.database[self.config['collection']]
+            self.runs_collection = self.client[self.config.get('runs_db_name', 'run')][
+                self.config.get('runs_db_collection', 'runs')]
+            self.database = self.client[self.config.get('database', 'xamsdata')]
+            print(self.config.get('database', 'xamsdata'))
         except pymongo.errors.ConnectionFailure as e:
             self.log.fatal("Cannot connect to database")
             self.log.exception(e)
             raise
+
+        # Get the run info
+        print(self.config['input_name'])
+        print(self.runs_collection.count(), "hi")
+        run_id = ObjectId(self.config['input_name'])
+        self.run_doc = self.runs_collection.find_one({'_id': run_id})
+        if self.run_doc is None:
+            raise ValueError("Couldn't find a run doc with id %s, type of run id is %s" % (run_id, type(run_id)))
+
+        #self.collection = self.database[self.run_doc['ini']['mongo_collection']]
+        # WARNING HARD CODE
+        self.collection = self.database['DEFAULT']
+        print(self.collection.count())
 
         self.collection.create_index([('time', pymongo.ASCENDING)], background=True)
 
@@ -32,6 +47,10 @@ class MongoXAMSBase:
         self.current_time = -1
         self.events_built = 0
         super().startup()
+
+
+    def update_run_doc(self):
+        self.run_doc = self.runs_collection.find_one({'_id': self.run_doc['_id']})
 
     def events_from_mongo_docs(self, pulse_docs, flush=False):
         """Yields pax events from Mongo pulse documents.
@@ -93,43 +112,53 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
         # also_less_last_time = False
         minimum_query_time = self.config.get('minimum_query_time_seconds', 3) * units.s / self.mongo_time_unit
 
-        done = False
-        while done is False:
+        # This loop (which does the querying) will run once even if the runs has stopped before we even started
+        # So "daq has stopped" technically doesn't mean the DAQ has stopped for sure...
+        daq_has_stopped = False
+        while not daq_has_stopped:
 
-            last_pulse_list = list(self.collection.find().sort('_id', direction=pymongo.DESCENDING).limit(1))
+            last_pulse_list = list(self.collection.find().sort('time', direction=pymongo.DESCENDING).limit(1))
             if not len(last_pulse_list):
                 raise ValueError("No pulses in database?")
             
             last_pulse_time = last_pulse_list[0]['time']
-            next_time_to_search = last_pulse_time - acquisition_delay
-    
-            data_range_to_query = next_time_to_search - last_time_searched
 
-            time_to_sleep = minimum_query_time - data_range_to_query
-            time_to_sleep *= self.mongo_time_unit / units.s
-            if time_to_sleep > 0:
-                time_to_sleep += 5                
-                if insufficient_last_time:
-                    # Still not enough data -- we must be nearing the end of run. Fetch all data!
-                    next_time_to_search = last_pulse_time + 1000
-                    done = True
-                else:
+            self.update_run_doc()
+            daq_has_stopped = 'end' in self.run_doc
+            if daq_has_stopped:
+                # Do one more query to get all the pulses
+                next_time_to_search = last_pulse_time + 1e6
+
+            else:
+                # How much time is safe to search?
+                next_time_to_search = last_pulse_time - acquisition_delay
+
+                # Make sure we don't do a lot of mini-queries when we are exactly keeping pace with the DAQ
+
+                # duration in mongo units of data range we can query:
+                data_range_to_query = next_time_to_search - last_time_searched
+                time_to_sleep = minimum_query_time - data_range_to_query
+                time_to_sleep *= self.mongo_time_unit / units.s
+                if time_to_sleep > 0:
+                    time_to_sleep += 5
                     self.log.info("Insufficient data remaining, sleeping %0.1f sec, then retrying" % (time_to_sleep))
                     time.sleep(time_to_sleep)
-                    insufficient_last_time = True
                     continue
 
-            insufficient_last_time = False
-
             self.log.info("Searching after %0.3f mongos until %0.4f mongos" % (last_time_searched, next_time_to_search))
-            cursor = self.collection.find({"time": {"$gte": last_time_searched, 
-                                                    "$lt": next_time_to_search}})
+            query = {"time": {"$gte": last_time_searched,
+                              "$lt": next_time_to_search}}
+            cursor = self.collection.find(query)
             cursor = cursor.sort("time", pymongo.ASCENDING)
             self.log.info("Found %d pulses" % cursor.count())
 
             last_time_searched = next_time_to_search
             
-            yield from self.events_from_mongo_docs(cursor, flush=done)        
+            yield from self.events_from_mongo_docs(cursor, flush=daq_has_stopped)
+
+            # If we wanted to delete pulses, do here
+            if self.config.get('delete_data', False):
+                self.collection.delete_many(query)
 
 """
 class MongoDBInputTriggered(plugin.InputPlugin, MongoXAMSBase):

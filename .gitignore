@@ -1,4 +1,4 @@
-.idea           # pycharm
+.idea*           # pycharm
 /.project
 *~              # gedit
 
