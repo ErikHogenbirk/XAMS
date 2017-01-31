@@ -1,6 +1,12 @@
-.idea*           # pycharm
+#gedit
+*~
+*\~
+
+# pycharm
+.idea*
+.idea
 /.project
-*~              # gedit
+
 
 # Pyton cache
 *.pyc
