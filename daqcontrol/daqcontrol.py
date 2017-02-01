@@ -19,7 +19,7 @@ kodiaq_location = '/home/xams/kodiaq/src/slave'
 # Pax ini to use as template, TODO: config overrides can be included in 'processor' section of kodiaq ini
 pax_ini_config_path = '/home/xams/xams/XAMS_daq_to_raw.ini'
 # Directory in which to build data. TODO: conigure in ini as well, or even field on website
-data_directory = '/home/xams/xams/data'
+default_data_directory = '/home/xams/xams/data'
 
 done_field_name = 'event_building_complete'
 
@@ -76,7 +76,7 @@ Comments for new run:<br/>
 
 <h2>List of runs:</h2></br>
 <table>
-<tr> <td>Name</td> <td>Ini</td> <td>Start (UTC)</td> <td>Duration (min)</td>  <td>Events</td> <td>Comments</td> </tr>
+<tr> <td>Name</td> <td>Ini</td> <td>Start (UTC)</td> <td>Duration (min)</td>  <td>Events</td> <td>Comments</td> <td>Location</td> </tr>
 % for r in rundocs:
 <tr>
     <td>{{r['ini']['mongo']['collection']}}</td>
@@ -85,6 +85,7 @@ Comments for new run:<br/>
     <td>{{'%0.1f' % ((r['end'] - r['start']).total_seconds() / 60) if 'end' in r else 'Still running'}}</td>
     <td>{{r.get('events_built', '?')}}</td>
     <td>{{r['ini'].get('comments', '')}}</td>
+    <td>{{r['ini'].get('data_folder', '?')}}</td>
 </tr>
 % end
 </table>
@@ -222,17 +223,20 @@ def pax_manager():
             # Get possible pax config overrides from the run doc
             conf_override = run_doc.get('processor', {})
 
-            # Set the input (mongo collection) and output ()
+            # Set the input (mongo collection) and output (folder to write folder of zips to)
             conf_override.setdefault('pax', {})
             conf_override['pax']['input_name'] = run_name
-            conf_override['pax']['output_name'] = os.path.join(data_directory, run_name)
+            output_folder = run_doc['ini'].get('data_folder', default_data_directory)
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
+            conf_override['pax']['output_name'] = os.path.join(output_folder, run_name)
 
             # WARNING this will delete your data!
             # TODO: specify this on website
             conf_override.setdefault('MongoXAMS', {})
             conf_override['MongoXAMS']['delete_data'] = False
 
-            print("[paxmanager] Starting pax to process run %s" % run_name)
+            print("[paxmanager] Starting pax to process run %s, output to %s" % (run_name, output_folder))
             mypax = core.Processor(config_paths=pax_ini_config_path,
                                    config_dict=conf_override)
             mypax.run()
@@ -266,7 +270,7 @@ def view_page():
                        message=bt.request.query.message,
                        default_comment=default_comment,
                        run_form_status='' if can_start_run else 'disabled',
-                       ininames=os.listdir(prefab_ini_folder),
+                       ininames=[x for x in os.listdir(prefab_ini_folder) if x.endswith('.ini')],
                        action_options=OrderedDict([('boot_kodiaq', not kodiaq_running),
                                                    ('start_run', can_start_run),
                                                    ('stop_run', (kodiaq_running and kodiaq_taking_data)),
