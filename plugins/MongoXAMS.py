@@ -23,22 +23,29 @@ class MongoXAMSBase:
                 self.config.get('runs_db_collection', 'runs')]
             self.database = self.client[self.config.get('database', 'xamsdata')]
             print(self.config.get('database', 'xamsdata'))
+
         except pymongo.errors.ConnectionFailure as e:
             self.log.fatal("Cannot connect to database")
             self.log.exception(e)
             raise
 
-        # Get the run info
         print(self.config['input_name'])
         print(self.runs_collection.count(), "hi")
+
+        # input_name is a string with the id of the run doc to process
+        # Input_name is now a string, to use it in a MongoDB query we need to cast it to offical BSON id
         run_id = ObjectId(self.config['input_name'])
+
+		# Find the (unique) run with this ID...
         self.run_doc = self.runs_collection.find_one({'_id': run_id})
         if self.run_doc is None:
             raise ValueError("Couldn't find a run doc with id %s, type of run id is %s" % (run_id, type(run_id)))
 
-        #self.collection = self.database[self.run_doc['ini']['mongo_collection']]
-        # WARNING HARD CODE
-        self.collection = self.database['DEFAULT']
+        # ...which we use to get the collection name in the data database
+        # All this would have been much easier if collection names were unique!
+        self.collection = self.database[self.run_doc['name']]
+        # self.collection = self.database[self.run_doc['ini']['mongo']['collection']]
+
         print(self.collection.count())
 
         self.collection.create_index([('time', pymongo.ASCENDING)], background=True)
