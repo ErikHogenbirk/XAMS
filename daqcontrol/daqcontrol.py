@@ -1,17 +1,26 @@
 from collections import OrderedDict
+import json
+import os
 import random
 import datetime
 import time
 import threading
-import ptyprocess
 from queue import Queue, Empty
 
+import pymongo
+import ptyprocess
 import bottle as bt
 
+prefab_ini_folder = 'ini'
+kodiaq_location = '/home/xams/kodiaq/src/slave'
 kodiaq_command_queue = Queue()
 kodiaq_running = False
 kodiaq_taking_data = False
 timed_actions = []      # list of threading.Timer() objects that are waiting
+
+# Connection to mongo: don't need to reinit this every time somebody refreshes the page
+client = pymongo.MongoClient()
+runs_collection = client['run']['runs']
 
 the_page = """
 <html>
@@ -57,17 +66,18 @@ Comments for new run:<br/>
 
 <h2>List of runs:</h2></br>
 <table>
-<tr> <td>Name</td> <td>Ini</td> <td>Start</td> <td>Duration (min)</td>  <td>Events</td> <td>Comments</td> </tr>
+<tr> <td>Name</td> <td>Ini</td> <td>Start (UTC)</td> <td>Duration (min)</td>  <td>Events</td> <td>Comments</td> </tr>
 % for r in rundocs:
 <tr>
-    <td>{{r.get('name')}}</td>
-    <td>{{r.get('ini')}}</td>
-    <td>someday</td>
-    <td>not too long</td>
-    <td>many</td>
-    <td>{{r.get('comments')}}</td>
+    <td>{{r['ini']['mongo']['collection']}}</td>
+    <td>{{r['ini'].get('ini_template_name', '')}}</td>
+    <td>{{r['start'].strftime('%Y/%m/%d %H:%M:%S')}}</td>
+    <td>{{'%0.1f' % ((r['end'] - r['start']).total_seconds() / 60) if 'end' in r else 'Still running'}}</td>
+    <td>?</td>
+    <td>{{r['ini'].get('comments', '')}}</td>
 </tr>
 % end
+</table>
 </form>
 </body>
 </html>
@@ -119,7 +129,12 @@ def kodiaq_manager(q):
         if kodiaq is None:
             if message == 'start':
                 print("Starting kodiaq")
-                kodiaq = ptyprocess.PtyProcessUnicode.spawn(['./koSlave_fake.py'], echo=True)
+                cwd = os.getcwd()
+                os.chdir(kodiaq_location)
+
+                kodiaq = ptyprocess.PtyProcessUnicode.spawn([os.path.join(kodiaq_location, 'koSlave')], echo=True)
+
+                os.chdir(cwd)
                 threading.Thread(target=slurper, args=(kodiaq,)).start()
             else:
                 raise ValueError("Invalid message %s while kodiaq not running" % message)
@@ -133,10 +148,25 @@ def kodiaq_manager(q):
                 kodiaq = None
 
 
-def start_run(ini='', stop_after=0, comments='', repeat=False):
+def start_run(ini, stop_after=0, comments='', repeat=False):
     global kodiaq_taking_data, timed_actions
 
     #TODO: Insert collection name and comments in ini, pass ini to kodiaq
+    with open(os.path.join(prefab_ini_folder, ini), mode='r') as data_file:
+        ini_data = json.load(data_file)
+
+    ini_data['mongo']['collection'] = datetime.datetime.utcnow().strftime('%y%m%d_%H%M%S')
+    ini_data['comments'] = comments
+    ini_data['ini_template_name'] = ini[:-4]
+
+    # Would be chill if we could adapt path on website, then do e.g
+    # ini_data['pax_config_override'].setdefault({})
+    # ini_data['pax_config_override']['pax'].setdefault({})
+    # ini_data['pax_config_override']['pax']['output_name'] = output_folder
+    with open(os.path.join(kodiaq_location, 'DAQConfig.ini'), mode='w') as outfile:
+        json.dump(ini_data, outfile)
+
+    time.sleep(1)
 
     kodiaq_command_queue.put('s')
     kodiaq_taking_data = True
@@ -175,9 +205,7 @@ def pax_manager():
 
 @bt.route('/')
 def view_page():
-
-    # TODO: get collections from MongoDB
-    rundocs = [dict(name='example', ini='bla.ini', comments='YAHOO!!')]
+    rundocs = list(runs_collection.find().sort('start', pymongo.DESCENDING))
 
     can_start_run = kodiaq_running and not kodiaq_taking_data
     now = datetime.datetime.now()
@@ -194,7 +222,7 @@ def view_page():
                        message=bt.request.query.message,
                        default_comment=default_comment,
                        run_form_status='' if can_start_run else 'disabled',
-                       ininames=['bla.ini', 'otherbla.ini'],
+                       ininames=os.listdir(prefab_ini_folder),
                        action_options=OrderedDict([('boot_kodiaq', not kodiaq_running),
                                                    ('start_run', can_start_run),
                                                    ('stop_run', (kodiaq_running and kodiaq_taking_data)),
@@ -257,6 +285,7 @@ def process():
         else:
             # Get data from the form
             comments = bt.request.forms['comments']
+
             ini = bt.request.forms['ini']
             stop_after = bt.request.forms['stop_after']
             if stop_after:
