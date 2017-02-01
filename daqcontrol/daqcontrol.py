@@ -7,12 +7,22 @@ import time
 import threading
 from queue import Queue, Empty
 
+import pytz
 import pymongo
 import ptyprocess
 import bottle as bt
 
+from pax import core
+
 prefab_ini_folder = 'ini'
 kodiaq_location = '/home/xams/kodiaq/src/slave'
+# Pax ini to use as template, TODO: config overrides can be included in 'processor' section of kodiaq ini
+pax_ini_config_path = '/home/xams/xams/XAMS_daq_to_raw.ini'
+# Directory in which to build data. TODO: conigure in ini as well, or even field on website
+data_directory = '/home/xams/xams/data'
+
+done_field_name = 'event_building_complete'
+
 kodiaq_command_queue = Queue()
 kodiaq_running = False
 kodiaq_taking_data = False
@@ -73,7 +83,7 @@ Comments for new run:<br/>
     <td>{{r['ini'].get('ini_template_name', '')}}</td>
     <td>{{r['start'].strftime('%Y/%m/%d %H:%M:%S')}}</td>
     <td>{{'%0.1f' % ((r['end'] - r['start']).total_seconds() / 60) if 'end' in r else 'Still running'}}</td>
-    <td>?</td>
+    <td>{{r.get('events_built', '?')}}</td>
     <td>{{r['ini'].get('comments', '')}}</td>
 </tr>
 % end
@@ -108,14 +118,14 @@ def kodiaq_manager(q):
     def slurper(kodiaq):
         while True:
             if kodiaq is None or not kodiaq.isalive():
-                print("Kodiaq not (yet) alive")
+                print("[kodiaqmanager] Kodiaq not (yet) alive")
                 time.sleep(1)
                 continue
             try:
                 print(kodiaq.read(10), end="")
             except EOFError:
                 # Kodiaq is about to quit
-                print("Got EOF when reading kodiaq's output, probably you're shutting down kodiaq?")
+                print("[kodiaqmanager] Got EOF when reading kodiaq's output, probably you're shutting down kodiaq?")
                 break
 
     while True:
@@ -128,7 +138,7 @@ def kodiaq_manager(q):
 
         if kodiaq is None:
             if message == 'start':
-                print("Starting kodiaq")
+                print("[kodiaqmanager] Starting kodiaq")
                 cwd = os.getcwd()
                 os.chdir(kodiaq_location)
 
@@ -137,10 +147,10 @@ def kodiaq_manager(q):
                 os.chdir(cwd)
                 threading.Thread(target=slurper, args=(kodiaq,)).start()
             else:
-                raise ValueError("Invalid message %s while kodiaq not running" % message)
+                raise ValueError("[kodiaqmanager] Invalid message %s while kodiaq not running" % message)
 
         else:
-            print("Sending keystroke >%s< to kodiaq" % message)
+            print("[kodiaqmanager] Sending keystroke >%s< to kodiaq" % message)
             kodiaq.write(message)
 
             if message == 'q':
@@ -166,19 +176,17 @@ def start_run(ini, stop_after=0, comments='', repeat=False):
     with open(os.path.join(kodiaq_location, 'DAQConfig.ini'), mode='w') as outfile:
         json.dump(ini_data, outfile)
 
-    time.sleep(1)
-
     kodiaq_command_queue.put('s')
     kodiaq_taking_data = True
 
     if stop_after:
-        print("Scheduling run stop after %d seconds" % stop_after)
+        print("[daqcontrol] Scheduling run stop after %d seconds" % stop_after)
         t = threading.Timer(stop_after, stop_run)
         t.start()
         timed_actions.append(t)
     if repeat:
         restart_after = stop_after + 10
-        print("Scheduling run restart after %d seconds" % restart_after)
+        print("[daqcontrol] Scheduling run restart after %d seconds" % restart_after)
 
         # Start the run 10 seconds after we stop
         t = threading.Timer(restart_after,
@@ -187,20 +195,56 @@ def start_run(ini, stop_after=0, comments='', repeat=False):
         t.start()
         timed_actions.append(t)
 
-    message = "Started run with ini %s, stop_after %s, comments %s, repeat %s" % (ini, stop_after, comments, repeat)
+    message = "[daqcontrol] Started run with ini %s, stop_after %s, comments %s, repeat %s" % (ini, stop_after, comments, repeat)
     return message
 
 
 def stop_run():
     global kodiaq_taking_data
-    print("Stopping run")
+    print("[daqcontrol] Stopping run")
     kodiaq_command_queue.put('p')
     kodiaq_taking_data = False
 
 
 def pax_manager():
     while True:
-        time.sleep(1)
+        # Get all runs for which events have not been built yet
+        runs_todo = list(runs_collection.find({done_field_name: {'$exists': False}}))
+
+        if not runs_todo:
+            print("[paxmanager] No more runs to process, waiting a while...")
+            time.sleep(10)
+            continue
+
+        for run_doc in runs_todo:
+            run_name = run_doc['name']
+
+            # Get possible pax config overrides from the run doc
+            conf_override = run_doc.get('processor', {})
+
+            # Set the input (mongo collection) and output ()
+            conf_override.setdefault('pax', {})
+            conf_override['pax']['input_name'] = run_name
+            conf_override['pax']['output_name'] = os.path.join(data_directory, run_name)
+
+            # WARNING this will delete your data!
+            # TODO: specify this on website
+            conf_override.setdefault('MongoXAMS', {})
+            conf_override['MongoXAMS']['delete_data'] = False
+
+            print("[paxmanager] Starting pax to process run %s" % run_name)
+            mypax = core.Processor(config_paths=pax_ini_config_path,
+                                   config_dict=conf_override)
+            mypax.run()
+
+            del mypax
+            print("Pax is done!")
+
+            runs_collection.find_one_and_update({'name': run_name},
+                                                {'$set': {done_field_name: True}})
+
+            print("[paxmanager] Temporary nap to prevent infinite print or something")
+            time.sleep(3)
 
 
 @bt.route('/')

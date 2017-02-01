@@ -29,24 +29,20 @@ class MongoXAMSBase:
             self.log.exception(e)
             raise
 
-        print(self.config['input_name'])
-        print(self.runs_collection.count(), "hi")
+        # print(self.config['input_name'])
+        # print(self.runs_collection.count(), "hi")
 
-        # input_name is a string with the id of the run doc to process
-        # Input_name is now a string, to use it in a MongoDB query we need to cast it to offical BSON id
-        run_id = ObjectId(self.config['input_name'])
+        # input_name is the mongo collection name (not the id anymore)
+        run_name = self.config['input_name']
 
-		# Find the (unique) run with this ID...
-        self.run_doc = self.runs_collection.find_one({'_id': run_id})
+        self.run_doc = self.runs_collection.find_one({'name': run_name})
         if self.run_doc is None:
-            raise ValueError("Couldn't find a run doc with id %s, type of run id is %s" % (run_id, type(run_id)))
+            raise ValueError("Couldn't find a run doc with mongo collection %s" % run_name)
 
-        # ...which we use to get the collection name in the data database
-        # All this would have been much easier if collection names were unique!
-        self.collection = self.database[self.run_doc['name']]
-        # self.collection = self.database[self.run_doc['ini']['mongo']['collection']]
+        # Now finding te data collection is easy:
+        self.collection = self.database[run_name]
 
-        print(self.collection.count())
+        # print(self.collection.count())
 
         self.collection.create_index([('time', pymongo.ASCENDING)], background=True)
 
@@ -54,7 +50,6 @@ class MongoXAMSBase:
         self.current_time = -1
         self.events_built = 0
         super().startup()
-
 
     def update_run_doc(self):
         self.run_doc = self.runs_collection.find_one({'_id': self.run_doc['_id']})
@@ -105,6 +100,10 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
 
     def startup(self):
         super().startup()
+
+    def shutdown(self):
+        self.runs_collection.find_one_and_update({'name': self.run_doc['name']},
+                                                 {'$set': {'events_built': self.events_built}})
 
     def get_events(self):
         last_pulse_time = -1
