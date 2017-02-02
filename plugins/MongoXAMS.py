@@ -125,7 +125,9 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
 
             last_pulse_list = list(self.collection.find().sort('time', direction=pymongo.DESCENDING).limit(1))
             if not len(last_pulse_list):
-                raise ValueError("No pulses in database?")
+                self.log.warning("Did not find any pulses in collection, will now wait for 10 seconds...")
+                time.sleep(10)
+                continue
             
             last_pulse_time = last_pulse_list[0]['time']
 
