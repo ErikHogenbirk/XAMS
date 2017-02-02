@@ -263,6 +263,12 @@ def pax_manager():
             runs_collection.find_one_and_update({'name': run_name},
                                                 {'$set': {done_field_name: True}})
 
+            # Dump run doc in output folder
+            import pickle
+            with open(os.path.join(output_folder, run_name, 'run_doc.pkl'), mode='wb') as outfile:
+                pickle.dump(run_doc, outfile)
+
+
             print("[paxmanager] Temporary nap to prevent infinite print or something")
             time.sleep(3)
 
