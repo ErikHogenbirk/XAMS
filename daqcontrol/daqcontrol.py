@@ -65,6 +65,7 @@ Configuration:
 
 Stop after <input type='text' name='stop_after' size=5 {{run_form_status}}/> seconds (leave empty to run forever).<br/>
 Repeat (forever) run after stopping <input type='checkbox' name='repeat' {{run_form_status}}/><br/>
+Delete data from Mongo after done reading <input type='checkbox' name='delete_data' {{run_form_status}}/><br/>
 
 Comments for new run:<br/>
 <textarea name="comments" cols="40" rows="5" {{run_form_status}}>
@@ -159,7 +160,7 @@ def kodiaq_manager(q):
                 kodiaq = None
 
 
-def start_run(ini, stop_after=0, comments='', repeat=False):
+def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=False):
     global kodiaq_taking_data, timed_actions
 
     #TODO: Insert collection name and comments in ini, pass ini to kodiaq
@@ -169,6 +170,7 @@ def start_run(ini, stop_after=0, comments='', repeat=False):
     ini_data['mongo']['collection'] = datetime.datetime.utcnow().strftime('%y%m%d_%H%M%S')
     ini_data['comments'] = comments
     ini_data['ini_template_name'] = ini[:-4]
+    ini_data['delete_data'] = delete_data
 
     # Would be chill if we could adapt path on website, then do e.g
     # ini_data['pax_config_override'].setdefault({})
@@ -232,9 +234,23 @@ def pax_manager():
             conf_override['pax']['output_name'] = os.path.join(output_folder, run_name)
 
             # WARNING this will delete your data!
-            # TODO: specify this on website
             conf_override.setdefault('MongoXAMS', {})
-            conf_override['MongoXAMS']['delete_data'] = False
+            delete_data = run_doc['ini'].get('delete_data', False)
+            if delete_data:
+                print("Warning: I will be deleting your data!!!")
+            conf_override['MongoXAMS']['delete_data'] = delete_data
+            # Read which channels are enabled based on runs db
+            try:
+                register_list = run_doc['ini']['registers']
+                channels_enabled_dict = next(item for item in register_list if item["register"] == "8120")
+                binary_string = bin(int(channels_enabled_dict['value'], 16))[2:]
+                channels_enabled_list = [ch_n for ch_n, enabled in enumerate(reversed(binary_string)) if enabled == '1']
+            except:
+                print('WARNING did not correctly read channel enable mask, using [0,3]...')
+                channels_enabled_list = [0, 3]
+            # DEBUG check which channels are read
+            print('Read enabled channels from run doc: ', channels_enabled_list)
+            conf_override['MongoXAMS']['only_from_channels'] = channels_enabled_list
 
             print("[paxmanager] Starting pax to process run %s, output to %s" % (run_name, output_folder))
             mypax = core.Processor(config_paths=pax_ini_config_path,
@@ -339,8 +355,10 @@ def process():
             if stop_after:
                 stop_after = int(stop_after)
             repeat = 'repeat' in bt.request.forms
+            delete_data = 'delete_data' in bt.request.forms
 
-            message = start_run(ini=ini, stop_after=stop_after, comments=comments, repeat=repeat)
+            message = start_run(ini=ini, stop_after=stop_after, comments=comments, repeat=repeat,
+                                delete_data=delete_data)
 
     else:
         message = "Invalid action %s" % action
