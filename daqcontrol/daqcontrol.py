@@ -11,12 +11,13 @@ import pytz
 import pymongo
 import ptyprocess
 import bottle as bt
+from prettytable import PrettyTable
 
 from pax import core
 
 prefab_ini_folder = 'ini'
 kodiaq_location = '/home/xams/kodiaq/src/slave'
-# Pax ini to use as template, TODO: config overrides can be included in 'processor' section of kodiaq ini
+# Pax ini to use as template. Should not have to change this, pax only converts to raw files.
 pax_ini_config_path = '/home/xams/xams/XAMS_daq_to_raw.ini'
 # Directory in which to build data. TODO: conigure in ini as well, or even field on website
 default_data_directory = '/home/xams/xams/data'
@@ -65,7 +66,7 @@ Configuration:
 
 Stop after <input type='text' name='stop_after' size=5 {{run_form_status}}/> seconds (leave empty to run forever).<br/>
 Repeat (forever) run after stopping <input type='checkbox' name='repeat' {{run_form_status}}/><br/>
-Delete data from Mongo after done reading <input type='checkbox' name='delete_data' {{run_form_status}}/><br/>
+Delete data from Mongo after reading <input type='checkbox' name='delete_data' checked {{run_form_status}}/><br/>
 
 Comments for new run:<br/>
 <textarea name="comments" cols="40" rows="5" {{run_form_status}}>
@@ -104,8 +105,8 @@ def main():
     # Start the pax manager thread. This does not accept commands.
     pax_thread = threading.Thread(target=pax_manager)
     pax_thread.start()
-
-    bt.run(host='localhost', port=8080)
+    # host 0.0.0.0 allows for access from other PCs in the Nikhef network
+    bt.run(host='0.0.0.0', port=8080)
 
 
 def kodiaq_manager(q):
@@ -125,6 +126,7 @@ def kodiaq_manager(q):
                 continue
             try:
                 print(kodiaq.read(10), end="")
+                # if this works, then we can set kodiaq alive again? TODO ask the Jelly about this
             except EOFError:
                 # Kodiaq is about to quit
                 print("[kodiaqmanager] Got EOF when reading kodiaq's output, probably you're shutting down kodiaq?")
@@ -268,6 +270,24 @@ def pax_manager():
             with open(os.path.join(output_folder, run_name, 'run_doc.pkl'), mode='wb') as outfile:
                 pickle.dump(run_doc, outfile)
 
+            # Build a human-readable run doc with one dict item per option
+            run_doc_human = run_doc.copy()
+            run_doc_human_ini = run_doc_human['ini']
+            for key, val in run_doc_human_ini.items():
+                run_doc_human['ini_' + key] = val
+            for reg_dict in run_doc_human_ini['registers']:
+                run_doc_human['ini_registers_' + reg_dict['register']] = reg_dict
+            del (run_doc_human['ini'])
+            del (run_doc_human['ini_registers'])
+            # Build a table of this
+            t = PrettyTable(['key', 'value'])
+            for key, val in sorted(run_doc_human.items()):
+                t.add_row([key, val])
+            t.align = "l"
+            # Dump to a text file
+            with open(os.path.join(output_folder, run_name, 'run_doc_h.txt'), mode='w') as outfile:
+                outfile.write(str(t))
+
 
             print("[paxmanager] Temporary nap to prevent infinite print or something")
             time.sleep(3)
@@ -287,12 +307,17 @@ def view_page():
     elif now.hour > 23 or now.hour < 4:
         default_comment = "Dude, are you controlling XAMS in the middle of the night??"
 
+    # Sort ini names alphabetically and case-insensitive, and put default on top
+    ininames = sorted([x for x in os.listdir(prefab_ini_folder) if x.endswith('.ini')],
+                      key = lambda s: s.lower())
+    ininames.insert(0, ininames.pop(ininames.index('default_config.ini')))
+
     return bt.template(the_page,
                        rundocs=rundocs,
                        message=bt.request.query.message,
                        default_comment=default_comment,
                        run_form_status='' if can_start_run else 'disabled',
-                       ininames=[x for x in os.listdir(prefab_ini_folder) if x.endswith('.ini')],
+                       ininames=ininames,
                        action_options=OrderedDict([('boot_kodiaq', not kodiaq_running),
                                                    ('start_run', can_start_run),
                                                    ('stop_run', (kodiaq_running and kodiaq_taking_data)),
