@@ -78,7 +78,7 @@ Comments for new run:<br/>
 
 <h2>List of runs:</h2></br>
 <table>
-<tr> <td>Name</td> <td>Ini</td> <td>Start (UTC)</td> <td>Duration (min)</td>  <td>Events</td> <td>Comments</td> <td>Location</td> </tr>
+<tr> <td>Name</td> <td>Ini</td> <td>Start (UTC)</td> <td>Duration (min)</td>  <td>Events</td> <td>Comments</td> <td>Location</td> <td>Processing status</td> </tr>
 % for r in rundocs:
 <tr>
     <td>{{r['ini']['mongo']['collection']}}</td>
@@ -88,6 +88,8 @@ Comments for new run:<br/>
     <td>{{r.get('events_built', '?')}}</td>
     <td>{{r['ini'].get('comments', '')}}</td>
     <td>{{r['ini'].get('data_folder', '?')}}</td>
+    <td>{{r.get('processing_status', '?')}}</td>
+
 </tr>
 % end
 </table>
@@ -263,7 +265,8 @@ def pax_manager():
             print("Pax is done!")
 
             runs_collection.find_one_and_update({'name': run_name},
-                                                {'$set': {done_field_name: True}})
+                                                {'$set': {done_field_name: True,
+                                                          'processing_status' : 'pending'}})
 
             # Dump run doc in output folder
             import pickle
