@@ -67,6 +67,8 @@ Configuration:
 Stop after <input type='text' name='stop_after' size=5 {{run_form_status}}/> seconds (leave empty to run forever).<br/>
 Repeat (forever) run after stopping <input type='checkbox' name='repeat' {{run_form_status}}/><br/>
 Delete data from Mongo after reading <input type='checkbox' name='delete_data' checked {{run_form_status}}/><br/>
+Do not autoprocess <input type='checkbox' name='do_not_process' {{run_form_status}}/><br/>
+
 
 Comments for new run:<br/>
 <textarea name="comments" cols="40" rows="5" {{run_form_status}}>
@@ -169,7 +171,7 @@ def kodiaq_manager(q):
                 kodiaq = None
 
 
-def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=False):
+def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=False, do_not_process=False):
     global kodiaq_taking_data, timed_actions
 
     #TODO: Insert collection name and comments in ini, pass ini to kodiaq
@@ -180,6 +182,7 @@ def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=False):
     ini_data['comments'] = comments
     ini_data['ini_template_name'] = ini[:-4]
     ini_data['delete_data'] = delete_data
+    ini_data['do_not_process'] = do_not_process
 
     # Would be chill if we could adapt path on website, then do e.g
     # ini_data['pax_config_override'].setdefault({})
@@ -269,9 +272,17 @@ def pax_manager():
             del mypax
             print("Pax is done!")
 
-            runs_collection.find_one_and_update({'name': run_name},
-                                                {'$set': {done_field_name: True,
-                                                          'processing_status' : 'pending'}})
+            do_not_process = run_doc['ini'].get('do_not_process', False)
+            if do_not_process:
+                print("Will not autoprocess run %s!" % run_name)
+                runs_collection.find_one_and_update({'name': run_name},
+                                                    {'$set': {done_field_name: True,
+                                                              'processing_status': 'do_not_process'}})
+            else:
+                runs_collection.find_one_and_update({'name': run_name},
+                                                    {'$set': {done_field_name: True,
+                                                              'processing_status': 'pending'}})
+
 
             # Dump run doc in output folder
             import pickle
@@ -395,9 +406,11 @@ def process():
                 stop_after = int(stop_after)
             repeat = 'repeat' in bt.request.forms
             delete_data = 'delete_data' in bt.request.forms
+            do_not_process = 'do_not_process' in bt.request.forms
+
 
             message = start_run(ini=ini, stop_after=stop_after, comments=comments, repeat=repeat,
-                                delete_data=delete_data)
+                                delete_data=delete_data, do_not_process=do_not_process)
 
     else:
         message = "Invalid action %s" % action
