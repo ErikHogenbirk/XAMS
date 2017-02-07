@@ -121,17 +121,18 @@ def kodiaq_manager(q):
     # I don't see how we can do STDOUT redirection with ptyprocess
     # read is blocking, so we need a slurper thread:
     def slurper(kodiaq):
+        time.sleep(1)
         while True:
             if kodiaq is None or not kodiaq.isalive():
-                print("[kodiaqmanager] Kodiaq not (yet) alive")
-                time.sleep(1)
-                continue
+                print("[kodiaqslurper] Kodiaq died?? ending slurper thread.")
+                break
             try:
+                # Get some bytes from kodiaq. This is a blocking call: if kodiaq does not exit but stops producing
+                # output it could never complete
                 print(kodiaq.read(10), end="")
-                # if this works, then we can set kodiaq alive again? TODO ask the Jelly about this
             except EOFError:
                 # Kodiaq is about to quit
-                print("[kodiaqmanager] Got EOF when reading kodiaq's output, probably you're shutting down kodiaq?")
+                print("[kodiaqslurper] kodiaq sent EOF. Probably its' saying goodbye because you're shutting it down.")
                 break
 
     while True:
@@ -160,7 +161,11 @@ def kodiaq_manager(q):
             kodiaq.write(message)
 
             if message == 'q':
-                kodiaq.wait()
+                time.sleep(1)
+                # This forces kodiaq to quit (even sending SIGKILL if necessary)
+                # To ensure we never have two kodiaqs running
+                kodiaq.close()
+                print("[kodiaqmanager] Kodiaq has been terminated")
                 kodiaq = None
 
 
