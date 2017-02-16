@@ -2,7 +2,7 @@ import time
 
 import numpy as np
 import pymongo
-from bson.objectid import ObjectId
+from datetime import datetime
 import snappy
 
 from pax.datastructure import Event, Pulse
@@ -31,15 +31,15 @@ class MongoXAMSBase:
 
         # print(self.config['input_name'])
         # print(self.runs_collection.count(), "hi")
-
         # input_name is the mongo collection name (not the id anymore)
         run_name = self.config['input_name']
 
         self.run_doc = self.runs_collection.find_one({'name': run_name})
         if self.run_doc is None:
             raise ValueError("Couldn't find a run doc with mongo collection %s" % run_name)
+        self.run_start_time = int((self.run_doc['start'] - datetime(1970, 1, 1)).total_seconds() * units.s)
 
-        # Now finding te data collection is easy:
+        # Now finding the data collection is easy:
         self.collection = self.database[run_name]
 
         # print(self.collection.count())
@@ -67,7 +67,7 @@ class MongoXAMSBase:
                 if pulse_doc['channel'] not in self.only_from_channels:
                     continue
 
-            if pulse_doc['time'] != self.current_time:
+            if pulse_doc['time'] * self.dt != self.current_time:
                 if len(self.pulses):
                     yield self.make_event()
                 self.current_time = pulse_doc['time'] * self.dt
@@ -86,9 +86,9 @@ class MongoXAMSBase:
         """Send the event from the currently processed pulses, then prepare for the next event
         """
         event = Event(n_channels=self.config['n_channels'],
-                      start_time=self.current_time,
+                      start_time=self.current_time + self.run_start_time,
                       sample_duration=self.dt,
-                      stop_time=self.current_time + self.dt * len(self.pulses[0].raw_data),
+                      stop_time=self.current_time + self.dt * len(self.pulses[0].raw_data) + self.run_start_time,
                       pulses=self.pulses,
                       event_number=self.events_built)
         self.events_built += 1

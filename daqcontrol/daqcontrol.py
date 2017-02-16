@@ -19,7 +19,8 @@ prefab_ini_folder = 'ini'
 kodiaq_location = '/home/xams/kodiaq/src/slave'
 # Pax ini to use as template. Should not have to change this, pax only converts to raw files.
 pax_ini_config_path = '/home/xams/xams/XAMS_daq_to_raw.ini'
-# Directory in which to build data. TODO: conigure in ini as well, or even field on website
+pax_ini_config_path_zle = '/home/xams/xams/XAMS_daq_to_raw_zle.ini'
+# Directory in which to build data.
 default_data_directory = '/home/xams/xams/data'
 
 done_field_name = 'event_building_complete'
@@ -265,7 +266,13 @@ def pax_manager():
             conf_override['MongoXAMS']['only_from_channels'] = channels_enabled_list
 
             print("[paxmanager] Starting pax to process run %s, output to %s" % (run_name, output_folder))
-            mypax = core.Processor(config_paths=pax_ini_config_path,
+            if run_doc['ini'].get('zle', False):
+                print('Using software ZLE for output...')
+                selected_pax_ini_config_path = pax_ini_config_path_zle
+            else:
+                print('Will NOT use ZLE, prepare for big files!')
+                selected_pax_ini_config_path = pax_ini_config_path
+            mypax = core.Processor(config_paths=selected_pax_ini_config_path,
                                    config_dict=conf_override)
             mypax.run()
 
