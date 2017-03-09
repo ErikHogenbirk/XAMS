@@ -172,7 +172,7 @@ def kodiaq_manager(q):
                 kodiaq = None
 
 
-def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=False, do_not_process=False):
+def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=True, do_not_process=False):
     global kodiaq_taking_data, timed_actions
 
     #TODO: Insert collection name and comments in ini, pass ini to kodiaq
@@ -207,7 +207,8 @@ def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=False, d
         # Start the run 10 seconds after we stop
         t = threading.Timer(restart_after,
                             start_run,
-                            kwargs=dict(ini=ini, stop_after=stop_after, comments=comments, repeat=repeat))
+                            kwargs=dict(ini=ini, stop_after=stop_after, comments=comments,
+                                        repeat=repeat, delete_data = delete_data, do_not_process = do_not_process))
         t.start()
         timed_actions.append(t)
 
@@ -248,9 +249,11 @@ def pax_manager():
 
             # WARNING this will delete your data!
             conf_override.setdefault('MongoXAMS', {})
-            delete_data = run_doc['ini'].get('delete_data', False)
+            delete_data = run_doc['ini'].get('delete_data', True)
             if delete_data:
                 print("Warning: I will be deleting your data!!!")
+            else:
+                print("I will keep the data in Mongo!")
             conf_override['MongoXAMS']['delete_data'] = delete_data
             # Read which channels are enabled based on runs db
             try:

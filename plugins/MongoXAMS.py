@@ -126,6 +126,7 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
             last_pulse_list = list(self.collection.find().sort('time', direction=pymongo.DESCENDING).limit(1))
             if not len(last_pulse_list):
                 # Has the run stopped? In that case, we just have zero events in there.
+                self.update_run_doc()
                 if 'end' in self.run_doc:
                     self.log.warning("Hey, collection %s is empty! That was easy! Done!" % (self.run_doc['name']))
                     break
