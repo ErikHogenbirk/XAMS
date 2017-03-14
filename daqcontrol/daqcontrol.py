@@ -66,7 +66,7 @@ Configuration:
 <br/>
 
 Stop after <input type='text' name='stop_after' size=5 {{run_form_status}}/> seconds (leave empty to run forever).<br/>
-Repeat (forever) run after stopping <input type='checkbox' name='repeat' {{run_form_status}}/><br/>
+Repeat <input type='text' name='repeat_n' size=5 {{run_form_status}}/> times (0 = repeat forever).<br/>
 Delete data from Mongo after reading <input type='checkbox' name='delete_data' checked {{run_form_status}}/><br/>
 Do not autoprocess <input type='checkbox' name='do_not_process' {{run_form_status}}/><br/>
 
@@ -172,7 +172,7 @@ def kodiaq_manager(q):
                 kodiaq = None
 
 
-def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=True, do_not_process=False):
+def start_run(ini, stop_after=0, repeat_n=0, comments='', delete_data=True, do_not_process=False):
     global kodiaq_taking_data, timed_actions
 
     #TODO: Insert collection name and comments in ini, pass ini to kodiaq
@@ -200,19 +200,20 @@ def start_run(ini, stop_after=0, comments='', repeat=False, delete_data=True, do
         t = threading.Timer(stop_after, stop_run)
         t.start()
         timed_actions.append(t)
-    if repeat:
+    if repeat_n:
         restart_after = stop_after + 10
+        print("[daqcontrol] Still got %d runs left to do so" % repeat_n)
         print("[daqcontrol] Scheduling run restart after %d seconds" % restart_after)
+        repeat_n = repeat_n -1
 
         # Start the run 10 seconds after we stop
         t = threading.Timer(restart_after,
                             start_run,
-                            kwargs=dict(ini=ini, stop_after=stop_after, comments=comments,
-                                        repeat=repeat, delete_data = delete_data, do_not_process = do_not_process))
+                            kwargs=dict(ini=ini, stop_after=stop_after, comments=comments, repeat_n=repeat_n, delete_data = delete_data, do_not_process = do_not_process))
         t.start()
         timed_actions.append(t)
 
-    message = "[daqcontrol] Started run with ini %s, stop_after %s, comments %s, repeat %s" % (ini, stop_after, comments, repeat)
+    message = "[daqcontrol] Started run with ini %s, stop_after %s, comments %s, repeat_n %s" % (ini, stop_after, comments, repeat_n)
     return message
 
 
@@ -414,12 +415,14 @@ def process():
             stop_after = bt.request.forms['stop_after']
             if stop_after:
                 stop_after = int(stop_after)
-            repeat = 'repeat' in bt.request.forms
+            repeat_n = bt.request.forms['repeat_n']
+            if repeat_n:
+                repeat_n = int(repeat_n)
             delete_data = 'delete_data' in bt.request.forms
             do_not_process = 'do_not_process' in bt.request.forms
 
 
-            message = start_run(ini=ini, stop_after=stop_after, comments=comments, repeat=repeat,
+            message = start_run(ini=ini, stop_after=stop_after, repeat_n = repeat_n, comments=comments,
                                 delete_data=delete_data, do_not_process=do_not_process)
 
     else:
