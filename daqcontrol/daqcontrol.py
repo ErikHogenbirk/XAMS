@@ -18,10 +18,19 @@ from pax import core
 prefab_ini_folder = 'ini'
 kodiaq_location = '/home/xams/kodiaq/src/slave'
 # Pax ini to use as template. Should not have to change this, pax only converts to raw files.
+# Use these lines for lena connection
+# pax_ini_config_path = '/home/xams/lena/run8/pax_ini/XAMS_daq_to_raw.ini'
+# pax_ini_config_path_zle = '/home/xams/lena/run8/pax_ini/XAMS_daq_to_raw_zle.ini'
+# pax_ini_config_path_super_zle = '/home/xams/lena/run8/pax_ini/XAMS_daq_to_raw_super_zle.ini'
+
+# Use these lines for local
 pax_ini_config_path = '/home/xams/xams/XAMS_daq_to_raw.ini'
 pax_ini_config_path_zle = '/home/xams/xams/XAMS_daq_to_raw_zle.ini'
+pax_ini_config_path_super_zle = '/home/xams/xams/XAMS_daq_to_raw_super_zle.ini'
+
 # Directory in which to build data.
 default_data_directory = '/home/xams/xams/data'
+extra_delay = 0
 
 done_field_name = 'event_building_complete'
 
@@ -201,7 +210,7 @@ def start_run(ini, stop_after=0, repeat_n=0, comments='', delete_data=True, do_n
         t.start()
         timed_actions.append(t)
     if repeat_n:
-        restart_after = stop_after + 10
+        restart_after = stop_after + 10 + extra_delay
         print("[daqcontrol] Still got %d runs left to do so" % repeat_n)
         print("[daqcontrol] Scheduling run restart after %d seconds" % restart_after)
         repeat_n = repeat_n -1
@@ -269,16 +278,29 @@ def pax_manager():
             print('Read enabled channels from run doc: ', channels_enabled_list)
             conf_override['MongoXAMS']['only_from_channels'] = channels_enabled_list
 
+
+
             print("[paxmanager] Starting pax to process run %s, output to %s" % (run_name, output_folder))
             if run_doc['ini'].get('zle', False):
                 print('Using software ZLE for output...')
-                selected_pax_ini_config_path = pax_ini_config_path_zle
+                if run_doc['ini'].get('super_zle', False):
+                    print('ZLE thresholds set to super value.')
+                    selected_pax_ini_config_path = pax_ini_config_path_super_zle
+                else:
+                    selected_pax_ini_config_path = pax_ini_config_path_zle
+
             else:
                 print('Will NOT use ZLE, prepare for big files!')
                 selected_pax_ini_config_path = pax_ini_config_path
-            mypax = core.Processor(config_paths=selected_pax_ini_config_path,
-                                   config_dict=conf_override)
-            mypax.run()
+
+            from pax.parallel import multiprocess_locally
+
+            # print('Waiting forever!!!')
+            # time.sleep(100000)
+
+            mypax = multiprocess_locally(n_cpus=2,
+                                         config_paths=selected_pax_ini_config_path,
+                                         config_dict=conf_override)
 
             del mypax
             print("Pax is done!")
@@ -340,7 +362,7 @@ def view_page():
     # Sort ini names alphabetically and case-insensitive, and put default on top
     ininames = sorted([x for x in os.listdir(prefab_ini_folder) if x.endswith('.ini')],
                       key = lambda s: s.lower())
-    ininames.insert(0, ininames.pop(ininames.index('default_config.ini')))
+    ininames.insert(0, ininames.pop(ininames.index('default_zle.ini')))
 
     return bt.template(the_page,
                        rundocs=rundocs,
