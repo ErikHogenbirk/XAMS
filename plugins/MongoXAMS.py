@@ -10,11 +10,12 @@ from pax import plugin, units
 
 
 class MongoXAMSBase:
-
     def startup(self):
         self.mongo_time_unit = int(self.config.get('mongo_time_unit', 10 * units.ns))
         self.only_from_channels = self.config.get('only_from_channels', None)
         self.dt = self.config['sample_duration']
+        self.inverted_channels = self.config.get('inverted_channels', [])
+        print('Inverting these channels: ', self.inverted_channels)
 
         self.log.debug("Connecting to %s" % self.config['address'])
         try:
@@ -74,8 +75,14 @@ class MongoXAMSBase:
 
             # Fetch raw data from document
             data = snappy.decompress(pulse_doc['data'])
+            
 
-            self.pulses.append(Pulse(left=0,
+            if pulse_doc['channel'] in self.inverted_channels:
+                self.pulses.append(Pulse(left=0,
+                                     raw_data=-np.fromstring(data, dtype="<i2"),
+                                     channel=pulse_doc['channel']))
+            else:        
+                self.pulses.append(Pulse(left=0,
                                      raw_data=np.fromstring(data, dtype="<i2"),
                                      channel=pulse_doc['channel']))
 
@@ -173,6 +180,9 @@ class MongoDBInputOnline(MongoXAMSBase, plugin.InputPlugin):
             # If we wanted to delete pulses, do here
             if self.config.get('delete_data', False):
                 self.collection.delete_many(query)
+
+
+
 
 """
 class MongoDBInputTriggered(plugin.InputPlugin, MongoXAMSBase):

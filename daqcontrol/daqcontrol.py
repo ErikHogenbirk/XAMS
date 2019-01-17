@@ -278,7 +278,10 @@ def pax_manager():
             print('Read enabled channels from run doc: ', channels_enabled_list)
             conf_override['MongoXAMS']['only_from_channels'] = channels_enabled_list
 
-
+            # Pass on the channels that should be inverted
+            inverted_channels = run_doc['ini'].get('inverted_channels', [])
+            print('Found these channels should be inverted:', inverted_channels)
+            conf_override['MongoXAMS']['inverted_channels'] = inverted_channels
 
             print("[paxmanager] Starting pax to process run %s, output to %s" % (run_name, output_folder))
             if run_doc['ini'].get('zle', False):
