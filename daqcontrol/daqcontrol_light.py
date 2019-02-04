@@ -1,3 +1,12 @@
+"""
+DAQControl program for XAMS DAQ.
+This program facilitates running Kodiaq () via webbrower-style interface
+Reads configuration files from a folder.
+Main program build by Jelle Aalbers, later modifications by Erik Hogenbirk
+Modified to light version that does not run pax (strax-based analysis).
+"""
+
+
 from collections import OrderedDict
 import json
 import os
@@ -17,20 +26,6 @@ from pax import core
 
 prefab_ini_folder = 'ini'
 kodiaq_location = '/home/xams/kodiaq/src/slave'
-# Pax ini to use as template. Should not have to change this, pax only converts to raw files.
-# Use these lines for lena connection
-# pax_ini_config_path = '/home/xams/lena/run8/pax_ini/XAMS_daq_to_raw.ini'
-# pax_ini_config_path_zle = '/home/xams/lena/run8/pax_ini/XAMS_daq_to_raw_zle.ini'
-# pax_ini_config_path_super_zle = '/home/xams/lena/run8/pax_ini/XAMS_daq_to_raw_super_zle.ini'
-
-# Use these lines for local
-pax_ini_config_path = '/home/xams/xams/XAMS_daq_to_raw.ini'
-pax_ini_config_path_zle = '/home/xams/xams/XAMS_daq_to_raw_zle.ini'
-pax_ini_config_path_super_zle = '/home/xams/xams/XAMS_daq_to_raw_super_zle.ini'
-
-# Directory in which to build data.
-default_data_directory = '/home/xams/xams/data'
-extra_delay = 0
 
 done_field_name = 'event_building_complete'
 
@@ -116,9 +111,6 @@ def main():
     kodiaq_thread = threading.Thread(target=kodiaq_manager, args=(kodiaq_command_queue,))
     kodiaq_thread.start()
 
-    # Start the pax manager thread. This does not accept commands.
-    pax_thread = threading.Thread(target=pax_manager)
-    pax_thread.start()
     # host 0.0.0.0 allows for access from other PCs in the Nikhef network
     bt.run(host='0.0.0.0', port=8080)
 
@@ -191,7 +183,7 @@ def start_run(ini, stop_after=0, repeat_n=0, comments='', delete_data=True, do_n
     ini_data['mongo']['collection'] = datetime.datetime.utcnow().strftime('%y%m%d_%H%M%S')
     ini_data['comments'] = comments
     ini_data['ini_template_name'] = ini[:-4]
-    ini_data['delete_mongo_data'] = delete_data
+    ini_data['delete_data'] = delete_data
     ini_data['do_not_process'] = do_not_process
 
     # Would be chill if we could adapt path on website, then do e.g
@@ -231,121 +223,6 @@ def stop_run():
     print("[daqcontrol] Stopping run")
     kodiaq_command_queue.put('p')
     kodiaq_taking_data = False
-
-
-def pax_manager():
-    while True:
-        # Get all runs for which events have not been built yet
-        runs_todo = list(runs_collection.find({done_field_name: {'$exists': False}}))
-
-        if not runs_todo:
-            print("[paxmanager] No more runs to process, waiting a while...")
-            time.sleep(10)
-            continue
-
-        for run_doc in runs_todo:
-            run_name = run_doc['name']
-
-            # Get possible pax config overrides from the run doc
-            conf_override = run_doc.get('processor', {})
-
-            # Set the input (mongo collection) and output (folder to write folder of zips to)
-            conf_override.setdefault('pax', {})
-            conf_override['pax']['input_name'] = run_name
-            output_folder = run_doc['ini'].get('data_folder', default_data_directory)
-            if not os.path.exists(output_folder):
-                os.makedirs(output_folder)
-            conf_override['pax']['output_name'] = os.path.join(output_folder, run_name)
-
-            # WARNING this will delete your data!
-            conf_override.setdefault('MongoXAMS', {})
-            delete_data = run_doc['ini'].get('delete_data', True)
-            if delete_data:
-                print("Warning: I will be deleting your data!!!")
-            else:
-                print("I will keep the data in Mongo!")
-            conf_override['MongoXAMS']['delete_data'] = delete_data
-            # Read which channels are enabled based on runs db
-            try:
-                register_list = run_doc['ini']['registers']
-                channels_enabled_dict = next(item for item in register_list if item["register"] == "8120")
-                binary_string = bin(int(channels_enabled_dict['value'], 16))[2:]
-                channels_enabled_list = [ch_n for ch_n, enabled in enumerate(reversed(binary_string)) if enabled == '1']
-            except:
-                print('WARNING did not correctly read channel enable mask, using [0,3]...')
-                channels_enabled_list = [0, 3]
-            # DEBUG check which channels are read
-            print('Read enabled channels from run doc: ', channels_enabled_list)
-            conf_override['MongoXAMS']['only_from_channels'] = channels_enabled_list
-
-            # Pass on the channels that should be inverted
-            inverted_channels = run_doc['ini'].get('inverted_channels', [])
-            print('Found these channels should be inverted:', inverted_channels)
-            conf_override['MongoXAMS']['inverted_channels'] = inverted_channels
-
-            print("[paxmanager] Starting pax to process run %s, output to %s" % (run_name, output_folder))
-            if run_doc['ini'].get('zle', False):
-                print('Using software ZLE for output...')
-                if run_doc['ini'].get('super_zle', False):
-                    print('ZLE thresholds set to super value.')
-                    selected_pax_ini_config_path = pax_ini_config_path_super_zle
-                else:
-                    selected_pax_ini_config_path = pax_ini_config_path_zle
-
-            else:
-                print('Will NOT use ZLE, prepare for big files!')
-                selected_pax_ini_config_path = pax_ini_config_path
-
-            from pax.parallel import multiprocess_locally
-
-            # print('Waiting forever!!!')
-            # time.sleep(100000)
-
-            mypax = multiprocess_locally(n_cpus=2,
-                                         config_paths=selected_pax_ini_config_path,
-                                         config_dict=conf_override)
-
-            del mypax
-            print("Pax is done!")
-
-            do_not_process = run_doc['ini'].get('do_not_process', False)
-            if do_not_process:
-                print("Will not autoprocess run %s!" % run_name)
-                runs_collection.find_one_and_update({'name': run_name},
-                                                    {'$set': {done_field_name: True,
-                                                              'processing_status': 'do_not_process'}})
-            else:
-                runs_collection.find_one_and_update({'name': run_name},
-                                                    {'$set': {done_field_name: True,
-                                                              'processing_status': 'pending'}})
-
-
-            # Dump run doc in output folder
-            import pickle
-            with open(os.path.join(output_folder, run_name, 'run_doc.pkl'), mode='wb') as outfile:
-                pickle.dump(run_doc, outfile)
-
-            # Build a human-readable run doc with one dict item per option
-            run_doc_human = run_doc.copy()
-            run_doc_human_ini = run_doc_human['ini']
-            for key, val in run_doc_human_ini.items():
-                run_doc_human['ini_' + key] = val
-            for reg_dict in run_doc_human_ini['registers']:
-                run_doc_human['ini_registers_' + reg_dict['register']] = reg_dict
-            del (run_doc_human['ini'])
-            del (run_doc_human['ini_registers'])
-            # Build a table of this
-            t = PrettyTable(['key', 'value'])
-            for key, val in sorted(run_doc_human.items()):
-                t.add_row([key, val])
-            t.align = "l"
-            # Dump to a text file
-            with open(os.path.join(output_folder, run_name, 'run_doc_h.txt'), mode='w') as outfile:
-                outfile.write(str(t))
-
-
-            print("[paxmanager] Temporary nap to prevent infinite print or something")
-            time.sleep(3)
 
 
 @bt.route('/')
