@@ -27,8 +27,6 @@ from pax import core
 prefab_ini_folder = 'ini'
 kodiaq_location = '/home/xams/kodiaq/src/slave'
 
-done_field_name = 'event_building_complete'
-
 kodiaq_command_queue = Queue()
 kodiaq_running = False
 kodiaq_taking_data = False
@@ -110,6 +108,9 @@ def main():
     # Start the kodiaq manager thread
     kodiaq_thread = threading.Thread(target=kodiaq_manager, args=(kodiaq_command_queue,))
     kodiaq_thread.start()
+
+    tag_thread = threading.Thread(target=tag_manager)
+    tag_thread.start()
 
     # host 0.0.0.0 allows for access from other PCs in the Nikhef network
     bt.run(host='0.0.0.0', port=8080)
@@ -242,7 +243,7 @@ def view_page():
     # Sort ini names alphabetically and case-insensitive, and put default on top
     ininames = sorted([x for x in os.listdir(prefab_ini_folder) if x.endswith('.ini')],
                       key = lambda s: s.lower())
-    ininames.insert(0, ininames.pop(ininames.index('default_zle.ini')))
+    ininames.insert(0, ininames.pop(ininames.index('default.ini')))
 
     return bt.template(the_page,
                        rundocs=rundocs,
@@ -331,6 +332,33 @@ def process():
         message = "Invalid action %s" % action
 
     return bt.template(message_page, message=message)
+
+
+def tag_manager():
+    while True:
+        # Check if there are runs that do not have a processing status yet
+        runs_todo = list(runs_collection.find({'processing_status': {'$exists': False}}))
+        # We assume they are taking data currently (should only be one, actually, so something went wrong if there are more. Add warning?)
+        for run_doc in runs_todo:
+            run_name = run_doc['name']
+            print('[tag_updater] setting tag of run %s to taking data' % run_name)
+            runs_collection.find_one_and_update({'name': run_name},
+                                                    {'$set': {'processing_status': 'taking_data'}})
+
+        # Check if there is a run that just finished
+        runs_todo = list(runs_collection.find({'processing_status': 'taking_data', 'end': {'$exists' : True}}))
+        for run_doc in runs_todo:
+            run_name = run_doc['name']
+            print('[tag_updater] setting tag of run %s to pending' % run_name)
+            runs_collection.find_one_and_update({'name': run_name},
+                                                    {'$set': {'processing_status': 'pending'}})
+
+        if not runs_todo:
+            # print("[tag_updater] No more runs to process, waiting a while...")
+            time.sleep(1)
+            continue
+
+
 
 
 if __name__ == '__main__':
